@@ -156,7 +156,11 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
     if not segments:
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})
         return
-    detected = detect_question(segments)
+    previous_question = state.last_question(session_id)
+    detected = detect_question(
+        segments,
+        exclude=[previous_question] if event == "ask_ai" and previous_question else None,
+    )
     question = detected["question"]
     if not question:
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})

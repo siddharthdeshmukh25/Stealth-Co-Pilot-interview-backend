@@ -226,6 +226,9 @@ class LocalStateManager:
     def remember_question(self, session_id: str, question: str) -> None:
         self._last_question[session_id] = question
 
+    def last_question(self, session_id: str) -> str:
+        return self._last_question.get(session_id, "")
+
     async def snapshot(self, session_id: str) -> dict[str, Any]:
         return {
             "event": "snapshot",

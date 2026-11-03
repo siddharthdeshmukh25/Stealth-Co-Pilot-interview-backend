@@ -1,4 +1,4 @@
-"""Pick the question the interviewer actually just asked out of the caption stream."""
+"""Collect the interviewer's current question or set of questions from captions."""
 import re
 
 QUESTION_START = re.compile(
@@ -8,34 +8,65 @@ QUESTION_START = re.compile(
     r"are you|is there|give me|share|show me|suppose|imagine|difference between)\b",
     re.IGNORECASE,
 )
-INTERROGATIVE = re.compile(
-    r"\b(what|why|how|when|where|which|who|tell me|explain|describe|"
-    r"walk me through|can you|could you|would you|do you|did you|have you|"
-    r"are you|is there|give me|share|difference between|talk about)\b",
-    re.IGNORECASE,
-)
 
 
-def detect_question(segments: list[str], lookback: int = 8) -> dict:
-    """Return {"question", "is_question", "index"} for the newest captions.
+def _key(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
 
-    Priority: newest segment with a question mark, then newest segment that reads
-    like a question, then the last one or two segments (a question split by a pause).
-    """
-    cleaned = [segment.strip() for segment in segments if segment and segment.strip()]
+
+def _questions_in_segment(segment: str) -> list[str]:
+    # A single transcription can contain several complete questions.
+    pieces = re.split(r"(?<=[?])\s+", segment.strip())
+    found: list[str] = []
+    for piece in pieces:
+        cleaned = piece.strip(" \t\r\n.,;:-")
+        cleaned = re.sub(r"^\d+[.)]\s*", "", cleaned)
+        if not cleaned:
+            continue
+        if "?" in piece or QUESTION_START.search(cleaned):
+            found.append(cleaned)
+    return found
+
+
+def detect_question(segments: list[str], lookback: int = 10, exclude: list[str] | None = None) -> dict:
+    """Return all distinct questions in recent captions, in the order asked."""
+    cleaned = [" ".join(segment.split()) for segment in segments if segment and segment.strip()]
     if not cleaned:
-        return {"question": "", "is_question": False, "index": None}
+        return {"question": "", "questions": [], "is_question": False, "index": None}
 
     window = cleaned[-lookback:]
     offset = len(cleaned) - len(window)
+    excluded = {_key(part) for item in (exclude or []) for part in _questions_in_segment(item)}
+    questions: list[str] = []
+    seen = set(excluded)
+    last_index = None
 
-    for position in range(len(window) - 1, -1, -1):
-        if "?" in window[position]:
-            return {"question": window[position], "is_question": True, "index": offset + position}
+    for position, segment in enumerate(window):
+        candidates = _questions_in_segment(segment)
+        for candidate in candidates:
+            key = _key(candidate)
+            if key and key not in seen:
+                questions.append(candidate)
+                seen.add(key)
+                last_index = offset + position
 
-    for position in range(len(window) - 1, -1, -1):
-        if QUESTION_START.search(window[position]) or INTERROGATIVE.search(window[position]):
-            return {"question": window[position], "is_question": True, "index": offset + position}
+    if not questions:
+        # Speech recognition sometimes drops punctuation. Use the newest caption
+        # that reads like a question, or join the last two pieces of a split turn.
+        for position in range(len(window) - 1, -1, -1):
+            if QUESTION_START.search(window[position]):
+                questions = [window[position]]
+                last_index = offset + position
+                break
+        if not questions:
+            questions = [" ".join(window[-2:]) if len(window) > 1 else window[0]]
 
-    question = " ".join(window[-2:]) if len(window) > 1 else window[0]
-    return {"question": question, "is_question": False, "index": None}
+    bundled = questions[0] if len(questions) == 1 else "\n".join(
+        f"{index}. {question}" for index, question in enumerate(questions, 1)
+    )
+    return {
+        "question": bundled,
+        "questions": questions,
+        "is_question": bool(last_index is not None),
+        "index": last_index,
+    }

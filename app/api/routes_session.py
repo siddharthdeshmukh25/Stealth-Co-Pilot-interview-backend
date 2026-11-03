@@ -71,6 +71,23 @@ async def pair_desktop(payload: PairRequest, db: Session = Depends(get_session))
     return PairResponse(session_id=session_id, paired=True)
 
 
+@router.get("/pairing/{pairing_code}")
+async def resolve_pairing(pairing_code: str, db: Session = Depends(get_session)):
+    """Look up a room from the code printed in the desktop app, without pairing the desktop."""
+    session_id = await state.resolve_pairing_code(pairing_code)
+    if not session_id:
+        raise HTTPException(404, "This pairing code is not linked to an active interview room.")
+    record = db.get(InterviewSession, session_id)
+    if not record or record.status != "active":
+        raise HTTPException(409, "This interview room is no longer active. Create a new room in the desktop app.")
+    return {
+        "session_id": session_id,
+        "pairing_code": record.pairing_code,
+        "status": record.status,
+        "job_title": record.job_title,
+    }
+
+
 @router.get("/{session_id}")
 def get_session(session_id: str, db: Session = Depends(get_session)):
     record = db.get(InterviewSession, session_id)

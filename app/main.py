@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 from .api.routes_resume import router as resume_router
+from .api.routes_ai import router as ai_router
 from .api.routes_session import router as session_router
-from .config import get_groq_api_key, get_openai_api_key, settings
+from .config import get_groq_api_key, settings
 from .database import engine, init_db
 from .models import QALog
 from .network import lan_urls
@@ -31,6 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(resume_router)
+app.include_router(ai_router)
 app.include_router(session_router)
 
 
@@ -44,9 +46,7 @@ def health():
     database_path = settings.database_path
     return {
         "status": "ok",
-        "ai_configured": bool(get_groq_api_key() and get_openai_api_key()),
-        "answer_ai_configured": bool(get_openai_api_key()),
-        "resume_stt_configured": bool(get_groq_api_key()),
+        "ai_configured": bool(get_groq_api_key()),
         "bind_host": settings.host,
         "port": settings.port,
         "lan_urls": lan_urls(settings.port),
@@ -58,17 +58,11 @@ def health():
 
 
 def _ai_error_message(exc: Exception) -> str:
-    if not get_openai_api_key():
-        return (
-            "OPENAI_API_KEY is missing. Add your OpenAI API key to backend/.env or "
-            "%LOCALAPPDATA%\\StealthInterviewCoPilot\\.env, then restart the backend."
-        )
     if not get_groq_api_key():
         return (
-            "GROQ_API_KEY is missing. Groq is still used for resume parsing and speech transcription. "
-            "Add it to backend/.env, then restart the backend."
+            "GROQ_API_KEY is missing. Add it to backend/.env, then restart the backend."
         )
-    return str(exc)[:400] or "OpenAI could not process the request. Check the local desktop log for details."
+    return str(exc)[:400] or "Groq could not process the request. Check the local desktop log for details."
 
 
 def _save_answer(session_id: str, question: str, answer: str, action: str) -> int | None:
@@ -87,6 +81,8 @@ async def answer_question(
     history: list[str] | None = None,
     topic: str = "",
     batch: str = "",
+    model: str = "",
+    additional_context: str = "",
 ) -> None:
     context = await state.context_for(session_id)
     if not context:
@@ -109,7 +105,15 @@ async def answer_question(
     def pump() -> None:
         """Generate one answer for the current question; the batch is context only."""
         try:
-            tokens, status = stream_answer(question, context, action, history, topic)
+            tokens, status = stream_answer(
+                question,
+                context,
+                action,
+                history,
+                topic,
+                model=model,
+                additional_context=additional_context,
+            )
             for token in tokens:
                 if stop.is_set():
                     return
@@ -188,6 +192,8 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})
         return
     topic = str(message.get("topic") or "").strip()[:200]
+    model = str(message.get("model") or "").strip()[:160]
+    additional_context = str(message.get("additional_context") or "").strip()[:3000]
     batch = "\n".join(batch_segments)
     history = batch_segments
     state.remember_question(session_id, question, batch)
@@ -205,6 +211,8 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
             history,
             topic,
             batch,
+            model,
+            additional_context,
         )
     )
 

@@ -1,7 +1,7 @@
 """Interview-day self-check.
 
 Run from the backend folder:  .venv\\Scripts\\python.exe preflight.py
-Add --quick to skip paid model calls.
+Add --quick to skip the paid Groq calls.
 """
 from __future__ import annotations
 
@@ -96,10 +96,10 @@ def _firewall_rule_present(ports: tuple[str, ...] = ("8000", "3000")) -> bool | 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check the local interview co-pilot setup.")
-    parser.add_argument("--quick", action="store_true", help="skip paid model calls")
+    parser.add_argument("--quick", action="store_true", help="skip the paid Groq calls")
     args = parser.parse_args()
 
-    from app.config import ENV_FILE, get_groq_api_key, get_openai_api_key, settings
+    from app.config import ENV_FILE, get_groq_api_key, settings
 
     def python_version():
         version = ".".join(str(part) for part in sys.version_info[:3])
@@ -109,11 +109,6 @@ def main() -> int:
         if get_groq_api_key():
             return ("ok", "found")
         return ("fail", f"missing; add GROQ_API_KEY to {ENV_FILE}")
-
-    def openai_api_key():
-        if get_openai_api_key():
-            return ("ok", "found")
-        return ("fail", f"missing; add OPENAI_API_KEY to {ENV_FILE}")
 
     def database():
         from sqlmodel import Session, select
@@ -173,14 +168,14 @@ def main() -> int:
 
         client = Groq(api_key=key, timeout=40.0, max_retries=1)
         models = {model.id for model in client.models.list().data}
-        wanted = {settings.resume_model, "whisper-large-v3-turbo"}
+        wanted = {settings.answer_model, settings.resume_model, "whisper-large-v3-turbo"}
         missing = sorted(wanted - models)
         if missing:
             return ("fail", f"not available on Groq right now: {', '.join(missing)}")
-        return ("ok", f"{settings.resume_model}, whisper-large-v3-turbo")
+        return ("ok", f"{settings.answer_model}, whisper-large-v3-turbo")
 
     def answer_generation():
-        if not get_openai_api_key():
+        if not key:
             return ("skip", "no API key")
         from app.services.llm_service import stream_answer
 
@@ -194,7 +189,7 @@ def main() -> int:
         text = "".join(tokens).strip()
         finish = status.get("finish_reason")
         if not text:
-            return ("fail", f"OpenAI returned an empty answer (finish_reason={finish})")
+            return ("fail", f"Groq returned an empty answer (finish_reason={finish})")
         return ("ok", f"{len(text.split())} words, finish_reason={finish}")
 
     def transcription():
@@ -223,18 +218,17 @@ def main() -> int:
     print("\nStealth Interview Co-Pilot — preflight check\n" + "-" * 52)
     run("Python version", python_version)
     run("GROQ_API_KEY", api_key)
-    run("OPENAI_API_KEY", openai_api_key)
     run("Local database", database)
     run("LAN addresses", network)
     run("Windows Firewall", firewall)
     run("Backend health", backend_running)
     run("Groq models", configured_models)
     if args.quick:
-        record("skip", "OpenAI answer call", "--quick")
+        record("skip", "Groq answer call", "--quick")
         record("skip", "Groq transcription", "--quick")
         record("skip", "Resume extraction", "--quick")
     else:
-        run("OpenAI answer call", answer_generation)
+        run("Groq answer call", answer_generation)
         run("Groq transcription", transcription)
         run("Resume extraction", resume_parsing)
 

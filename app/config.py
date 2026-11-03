@@ -35,14 +35,13 @@ def _default_database_url() -> str:
 
 class Settings(BaseSettings):
     groq_api_key: str | None = None
-    openai_api_key: str | None = None
     host: str = "0.0.0.0"
     port: int = 8000
     database_url: str = _default_database_url()
     cors_origins: str = "http://localhost:3000"
     cors_origin_regex: str = LAN_ORIGIN_REGEX
     pairing_ttl_seconds: int = 600
-    answer_model: str = "gpt-6-luna"
+    answer_model: str = "llama-3.3-70b-versatile"
     resume_model: str = "openai/gpt-oss-120b"
     answer_temperature: float = 0.6
 
@@ -83,7 +82,7 @@ class Settings(BaseSettings):
 
     @property
     def is_reasoning_model(self) -> bool:
-        return self.answer_model.lower().startswith("gpt-6")
+        return "gpt-oss" in self.answer_model.lower()
 
     @property
     def database_path(self) -> Path | None:
@@ -141,10 +140,5 @@ def _get_api_key(variable: str) -> str | None:
 
 
 def get_groq_api_key() -> str | None:
-    """Groq still powers resume parsing and speech transcription."""
+    """Groq powers resume parsing, speech transcription, and interview answers."""
     return _get_api_key("GROQ_API_KEY")
-
-
-def get_openai_api_key() -> str | None:
-    """OpenAI powers live interview answer generation."""
-    return _get_api_key("OPENAI_API_KEY")

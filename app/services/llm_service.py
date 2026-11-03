@@ -3,9 +3,9 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
-from openai import OpenAI
+from groq import Groq
 
-from ..config import get_openai_api_key, settings
+from ..config import get_groq_api_key, settings
 from .pdf_parser import _resume_identity
 
 MAX_ANSWER_TOKENS = {"standard": 900, "explain_deeper": 1400, "code_example": 1200}
@@ -102,7 +102,14 @@ def _resume_block(context: dict, question: str) -> str:
     return "\n".join(parts)
 
 
-def build_prompt(question: str, context: dict, action: str, history: list[str] | None = None, topic: str = "") -> str:
+def build_prompt(
+    question: str,
+    context: dict,
+    action: str,
+    history: list[str] | None = None,
+    topic: str = "",
+    additional_context: str = "",
+) -> str:
     job_description = str(context.get("job_description") or "").strip()[:2500]
     transcript = "\n".join(history[-40:])[:9000] if history else ""
     sections = [
@@ -119,42 +126,57 @@ def build_prompt(question: str, context: dict, action: str, history: list[str] |
         )
     if topic.strip():
         sections.append(f"The candidate asked for a code example of:\n{topic.strip()[:200]}")
+    if additional_context.strip():
+        sections.append(
+            "Candidate's extra speaking preferences for this answer (follow these when relevant, "
+            "without inventing resume facts):\n" + additional_context.strip()[:3000]
+        )
     sections.append(f"Interviewer question to answer now:\n{question}")
     return "\n\n".join(section for section in sections if section.strip())
 
 
-def stream_answer(question: str, context: dict, action: str = "standard", history: list[str] | None = None, topic: str = ""):
+def stream_answer(
+    question: str,
+    context: dict,
+    action: str = "standard",
+    history: list[str] | None = None,
+    topic: str = "",
+    model: str = "",
+    additional_context: str = "",
+):
     """Return (token_iterator, status). status['finish_reason'] is filled while consuming the iterator."""
-    api_key = get_openai_api_key()
+    api_key = get_groq_api_key()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for interview answer generation.")
-    client = OpenAI(api_key=api_key, timeout=60.0, max_retries=1)
-    status: dict[str, Any] = {"finish_reason": None, "model": settings.answer_model}
+        raise RuntimeError("GROQ_API_KEY is required for interview answer generation.")
+    client = Groq(api_key=api_key, timeout=60.0, max_retries=1)
+    answer_model = model.strip()[:160] or settings.answer_model
+    status: dict[str, Any] = {"finish_reason": None, "model": answer_model}
 
     request: dict[str, Any] = {
-        "model": settings.answer_model,
-        "input": build_prompt(question, context, action, history, topic),
-        "max_output_tokens": MAX_ANSWER_TOKENS.get(action, MAX_ANSWER_TOKENS["standard"]),
+        "model": answer_model,
+        "messages": [{
+            "role": "user",
+            "content": build_prompt(question, context, action, history, topic, additional_context),
+        }],
+        "temperature": settings.answer_temperature,
+        "top_p": 0.95,
+        "max_completion_tokens": MAX_ANSWER_TOKENS.get(action, MAX_ANSWER_TOKENS["standard"]),
         "stream": True,
     }
-    if settings.is_reasoning_model:
-        # Keep live interview answers quick while allowing enough reasoning for accuracy.
-        request["reasoning"] = {"effort": "low"}
-    stream = client.responses.create(**request)
+    if "gpt-oss" in answer_model.lower():
+        request["reasoning_effort"] = "low"
+        request["include_reasoning"] = False
+    completion = client.chat.completions.create(**request)
 
     def tokens() -> Iterator[str]:
-        for event in stream:
-            if event.type == "response.output_text.delta":
-                yield event.delta
-            elif event.type == "response.completed":
-                incomplete = getattr(event.response, "incomplete_details", None)
-                reason = getattr(incomplete, "reason", None) if incomplete else None
-                status["finish_reason"] = "length" if reason == "max_output_tokens" else "stop"
-            elif event.type == "response.incomplete":
-                incomplete = getattr(event, "response", None)
-                details = getattr(incomplete, "incomplete_details", None) if incomplete else None
-                status["finish_reason"] = "length" if getattr(details, "reason", None) == "max_output_tokens" else "incomplete"
-            elif event.type == "error":
-                raise RuntimeError(getattr(event, "message", "OpenAI returned a streaming error."))
+        for chunk in completion:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.finish_reason:
+                status["finish_reason"] = choice.finish_reason
+            content = choice.delta.content if choice.delta else None
+            if content:
+                yield content
 
     return tokens(), status

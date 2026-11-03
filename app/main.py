@@ -229,6 +229,14 @@ async def websocket_room(websocket: WebSocket, session_id: str):
                 await state.clear_room(session_id)
                 await state.broadcast(session_id, {"event": "cleared"})
                 await state.broadcast(session_id, {"event": "status", "state": "listening"})
+            elif event == "transcript":
+                # The desktop app transcribes on its own machine and sends text only.
+                text = " ".join(str(message.get("text") or "").split())[:4000]
+                if not text:
+                    await websocket.send_json({"event": "error", "message": "Transcript text is empty."})
+                    continue
+                if await state.append_caption(session_id, text):
+                    await state.broadcast(session_id, {"event": "caption", "text": text})
             elif event == "audio_utterance":
                 encoded = message.get("audio_base64", "")
                 if not encoded:

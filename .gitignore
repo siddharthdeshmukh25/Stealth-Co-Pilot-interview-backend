@@ -1,0 +1,12 @@
+# Local secrets and database
+.env
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

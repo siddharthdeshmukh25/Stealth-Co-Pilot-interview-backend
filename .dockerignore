@@ -1,0 +1,17 @@
+# Never bake secrets or local state into the image.
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.git/
+.gitignore
+Dockerfile
+railway.json
+*.log

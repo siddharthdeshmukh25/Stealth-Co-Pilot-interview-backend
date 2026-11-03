@@ -26,6 +26,7 @@ def _load_context(session_id: str) -> dict[str, Any] | None:
             return None
         candidate = db.get(Candidate, record.candidate_id)
         return {
+            "candidate_name": candidate.name if candidate else "",
             "job_title": record.job_title,
             "job_description": record.job_description,
             "structured_json": candidate.structured_json if candidate else "{}",
@@ -223,6 +224,30 @@ class LocalStateManager:
         self._last_question.pop(session_id, None)
         self._last_batch.pop(session_id, None)
         await asyncio.to_thread(_delete_segments, session_id)
+
+    async def close_room(self, session_id: str) -> None:
+        """Stop live work and forget all in-memory room/resume context."""
+        stop = self._answer_stop.pop(session_id, None)
+        if stop:
+            stop.set()
+        self._answer_generation.pop(session_id, None)
+        await self.broadcast(session_id, {"event": "room_closed"})
+        self._answer_buffer.pop(session_id, None)
+        self._last_question.pop(session_id, None)
+        self._last_batch.pop(session_id, None)
+        self.session_context_cache.pop(session_id, None)
+        self.session_transcript_cache.pop(session_id, None)
+        self._pending_transcript.pop(session_id, None)
+        self._batch_requested.discard(session_id)
+        for code, (mapped_session, _) in list(self.pairing_map.items()):
+            if mapped_session == session_id:
+                self.pairing_map.pop(code, None)
+        for websocket in list(self.active_sockets.get(session_id, set())):
+            try:
+                await websocket.close(code=1000, reason="Interview room closed")
+            except Exception:
+                pass
+            await self.remove_socket(session_id, websocket)
 
     def latest_transcript(self, session_id: str) -> str:
         return "\n".join(self.session_transcript_cache.get(session_id, [])[-12:])

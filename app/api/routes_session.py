@@ -1,13 +1,14 @@
 import uuid
+import hmac
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ..config import settings
 from ..database import get_session
-from ..models import Candidate, InterviewSession
-from ..schemas import PairRequest, PairResponse, SessionCreate, SessionResponse
+from ..models import Candidate, InterviewSession, QALog, TranscriptSegment
+from ..schemas import PairRequest, PairResponse, SessionCloseRequest, SessionCreate, SessionResponse
 from ..state_manager import state
 
 router = APIRouter(prefix="/api/session", tags=["session"])
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/api/session", tags=["session"])
 
 def _room_context(candidate: Candidate, record: InterviewSession) -> dict:
     return {
+        "candidate_name": candidate.name,
         "job_title": record.job_title,
         "job_description": record.job_description,
         "structured_json": candidate.structured_json,
@@ -99,3 +101,38 @@ def get_session(session_id: str, db: Session = Depends(get_session)):
         "status": record.status,
         "is_exe_paired": record.is_exe_paired,
     }
+
+
+@router.delete("/{session_id}", status_code=204)
+async def close_session(
+    session_id: str,
+    payload: SessionCloseRequest,
+    db: Session = Depends(get_session),
+):
+    """Delete a closed room's transcript, answers, and unshared resume data."""
+    record = db.get(InterviewSession, session_id)
+    if not record:
+        return Response(status_code=204)
+    if not hmac.compare_digest(record.pairing_code, payload.pairing_code):
+        raise HTTPException(403, "The pairing code does not match this interview room.")
+
+    candidate_id = record.candidate_id
+    for item in db.exec(select(QALog).where(QALog.session_id == session_id)).all():
+        db.delete(item)
+    for item in db.exec(select(TranscriptSegment).where(TranscriptSegment.session_id == session_id)).all():
+        db.delete(item)
+    db.delete(record)
+    db.flush()
+
+    # A resume may be shared by another room; retain it until the final room closes.
+    remaining_room = db.exec(
+        select(InterviewSession).where(InterviewSession.candidate_id == candidate_id)
+    ).first()
+    if not remaining_room:
+        candidate = db.get(Candidate, candidate_id)
+        if candidate:
+            db.delete(candidate)
+    db.commit()
+
+    await state.close_room(session_id)
+    return Response(status_code=204)

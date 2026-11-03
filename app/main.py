@@ -73,7 +73,15 @@ def _save_answer(session_id: str, question: str, answer: str, action: str) -> in
         return entry.id
 
 
-async def answer_question(session_id: str, question: str, action: str = "standard", history: list[str] | None = None, topic: str = "", batch: str = "") -> None:
+async def answer_question(
+    session_id: str,
+    question: str,
+    action: str = "standard",
+    history: list[str] | None = None,
+    topic: str = "",
+    batch: str = "",
+    questions: list[str] | None = None,
+) -> None:
     context = await state.context_for(session_id)
     if not context:
         await state.broadcast(session_id, {
@@ -92,16 +100,28 @@ async def answer_question(session_id: str, question: str, action: str = "standar
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    question_list = [item.strip() for item in (questions or [question]) if item and item.strip()]
+    if not question_list:
+        question_list = [question]
 
     def pump() -> None:
-        """Run the blocking Groq stream off the event loop and feed tokens into the queue."""
+        """Answer each question in its own model call, preserving a single click/batch."""
         try:
-            tokens, status = stream_answer(question, context, action, history, topic)
-            for token in tokens:
+            finish_reason = None
+            for index, one_question in enumerate(question_list, 1):
                 if stop.is_set():
                     return
-                loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
-            loop.call_soon_threadsafe(queue.put_nowait, ("done", status))
+                if len(question_list) > 1:
+                    heading = f"### Question {index}\n\n"
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", heading))
+                tokens, status = stream_answer(one_question, context, action, history, topic)
+                for token in tokens:
+                    if stop.is_set():
+                        return
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+                if status.get("finish_reason") == "length":
+                    finish_reason = "length"
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", {"finish_reason": finish_reason}))
         except Exception as exc:  # noqa: BLE001 - reported to the socket below
             if not stop.is_set():
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
@@ -114,7 +134,7 @@ async def answer_question(session_id: str, question: str, action: str = "standar
         await state.broadcast(session_id, {"event": "status", "state": "streaming"})
         while True:
             try:
-                kind, payload = await asyncio.wait_for(queue.get(), timeout=95)
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=95 * len(question_list))
             except asyncio.TimeoutError as exc:
                 raise RuntimeError("The AI answer timed out. Check the internet connection and tap Ask AI again.") from exc
             if not state.is_current(session_id, generation):
@@ -180,7 +200,17 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
         "batch": batch,
         "is_question": detected["is_question"],
     })
-    asyncio.create_task(answer_question(session_id, question, action, history, topic, batch))
+    asyncio.create_task(
+        answer_question(
+            session_id,
+            question,
+            action,
+            history,
+            topic,
+            batch,
+            detected.get("questions") or [question],
+        )
+    )
 
 
 

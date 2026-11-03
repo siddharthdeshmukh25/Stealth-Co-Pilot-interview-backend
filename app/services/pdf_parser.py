@@ -10,13 +10,22 @@ from ..config import get_groq_api_key, settings
 
 logger = logging.getLogger(__name__)
 
-RESUME_KEYS = ("name", "core_skills", "projects", "experience")
+RESUME_KEYS = ("name", "email", "education", "core_skills", "projects", "experience")
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+NAME_HEADINGS = {
+    "resume", "curriculum vitae", "profile", "contact", "contact details",
+    "about me", "professional summary", "summary", "education", "experience",
+    "skills", "projects", "objective", "software engineer", "full stack developer",
+    "developer", "engineer", "portfolio",
+}
 
 EXTRACTION_INSTRUCTIONS = """You convert a resume into strict JSON. Return only a JSON object, no prose and no markdown fences.
 
 Use exactly these keys:
 {
   "name": "candidate full name",
+  "email": "email address or empty string",
+  "education": [{"degree": "qualification", "institution": "school or college", "duration": "dates", "details": "relevant details"}],
   "core_skills": ["skill", "skill"],
   "projects": [{"name": "project", "tech_stack": ["technology"], "impact_and_metrics": "one short line"}],
   "experience": [{"company": "company", "role": "title", "duration": "dates", "key_achievements": ["achievement"]}]
@@ -53,6 +62,8 @@ def _normalize(structured: dict) -> dict:
     name = structured.get("name")
     normalized = {
         "name": (name.strip()[:120] if isinstance(name, str) and name.strip() else "Candidate"),
+        "email": str(structured.get("email") or "").strip()[:200],
+        "education": [],
         "core_skills": _as_text_list(structured.get("core_skills")),
         "projects": [],
         "experience": [],
@@ -64,6 +75,15 @@ def _normalize(structured: dict) -> dict:
             "name": str(project.get("name") or "").strip()[:160],
             "tech_stack": _as_text_list(project.get("tech_stack")),
             "impact_and_metrics": str(project.get("impact_and_metrics") or "").strip()[:300],
+        })
+    for education in structured.get("education") or []:
+        if not isinstance(education, dict):
+            continue
+        normalized["education"].append({
+            "degree": str(education.get("degree") or "").strip()[:180],
+            "institution": str(education.get("institution") or "").strip()[:180],
+            "duration": str(education.get("duration") or "").strip()[:80],
+            "details": str(education.get("details") or "").strip()[:300],
         })
     for job in structured.get("experience") or []:
         if not isinstance(job, dict):
@@ -78,7 +98,12 @@ def _normalize(structured: dict) -> dict:
 
 
 def _has_resume_detail(structured: dict) -> bool:
-    return bool(structured["core_skills"] or structured["projects"] or structured["experience"])
+    return bool(
+        structured["education"]
+        or structured["core_skills"]
+        or structured["projects"]
+        or structured["experience"]
+    )
 
 
 def _extract_text(pdf_bytes: bytes) -> str:
@@ -105,8 +130,32 @@ def _extract_text(pdf_bytes: bytes) -> str:
 
 
 def _basic_resume_structure(raw_text: str, note: str) -> dict:
-    name = next((line.strip() for line in raw_text.splitlines() if len(line.strip()) > 2), "Candidate")
-    return {"name": name[:120], "core_skills": [], "projects": [], "experience": [], "note": note}
+    return {
+        "name": "Candidate",
+        "email": "",
+        "education": [],
+        "core_skills": [],
+        "projects": [],
+        "experience": [],
+        "note": note,
+    }
+
+
+def _resume_identity(raw_text: str) -> tuple[str, str]:
+    """Prefer literal identity text from the PDF over an LLM's guessed name/email."""
+    email_match = EMAIL_PATTERN.search(raw_text)
+    email = email_match.group(0) if email_match else ""
+    for line in raw_text.splitlines()[:16]:
+        candidate = re.split(r"\s+(?:\||[|•·])\s+|\s+-\s+", line.strip(), maxsplit=1)[0].strip("|•·- ")
+        if not candidate or len(candidate) > 80 or "@" in candidate or re.search(r"\d", candidate):
+            continue
+        lowered = re.sub(r"\s+", " ", candidate.lower()).strip(" .:-")
+        if lowered in NAME_HEADINGS or any(label in lowered for label in ("linkedin", "github", "portfolio", "http")):
+            continue
+        words = re.findall(r"[A-Za-z][A-Za-z.'-]*", candidate)
+        if 1 <= len(words) <= 4 and all(word.lower() not in NAME_HEADINGS for word in words):
+            return candidate, email
+    return "", email
 
 
 def _request_extraction(raw_text: str, api_key: str) -> dict:
@@ -148,6 +197,9 @@ def parse_resume(pdf_bytes: bytes) -> tuple[str, dict, dict]:
         structured = _basic_resume_structure(
             raw_text, "GROQ_API_KEY is missing; only the resume text was saved."
         )
+        literal_name, literal_email = _resume_identity(raw_text)
+        structured["name"] = literal_name or "Candidate"
+        structured["email"] = literal_email
         info = {
             "mode": "text_only",
             "warning": (
@@ -162,6 +214,9 @@ def parse_resume(pdf_bytes: bytes) -> tuple[str, dict, dict]:
     for attempt in (1, 2):
         try:
             structured = _request_extraction(raw_text, api_key)
+            literal_name, literal_email = _resume_identity(raw_text)
+            structured["name"] = literal_name or "Candidate"
+            structured["email"] = literal_email
             info = {"mode": "ai", "warning": None}
             structured["_extraction"] = info
             return raw_text, structured, info
@@ -173,6 +228,9 @@ def parse_resume(pdf_bytes: bytes) -> tuple[str, dict, dict]:
     structured = _basic_resume_structure(
         raw_text, "AI extraction failed; the resume text was saved and is still used for answers."
     )
+    literal_name, literal_email = _resume_identity(raw_text)
+    structured["name"] = literal_name or "Candidate"
+    structured["email"] = literal_email
     info = {
         "mode": "failed",
         "warning": (

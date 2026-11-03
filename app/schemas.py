@@ -31,6 +31,10 @@ class PairRequest(BaseModel):
             raise ValueError("Pairing code must be six digits.")
         return digits
 
+
+class SessionCloseRequest(PairRequest):
+    """Require the desktop's pairing code before deleting a room and its data."""
+
 class PairResponse(BaseModel):
     session_id: str
     paired: bool

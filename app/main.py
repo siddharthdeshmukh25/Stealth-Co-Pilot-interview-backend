@@ -154,6 +154,7 @@ async def answer_question(
         await state.broadcast(session_id, {
             "event": "answer_done",
             "qa_id": qa_id,
+            "answer": answer,
             "status": "truncated" if finish_reason == "length" else "ok",
             "finish_reason": finish_reason,
         })

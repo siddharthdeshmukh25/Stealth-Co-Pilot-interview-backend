@@ -86,6 +86,8 @@ async def answer_question(
 ) -> None:
     context = await state.context_for(session_id)
     if not context:
+        if history:
+            state.restore_pending_transcript(session_id, history)
         await state.broadcast(session_id, {
             "event": "error",
             "message": "This interview room is not in the local database. Create a new room from the desktop app.",
@@ -94,6 +96,8 @@ async def answer_question(
         return
     question = question.strip()
     if not question:
+        if history:
+            state.restore_pending_transcript(session_id, history)
         return
 
     generation, stop = state.begin_answer(session_id)
@@ -147,6 +151,8 @@ async def answer_question(
                 raise payload
 
         answer = "".join(parts)
+        if not answer.strip():
+            raise RuntimeError("The AI returned an empty answer. Tap Ask AI again to retry this interview question.")
         qa_id = await asyncio.to_thread(_save_answer, session_id, question, answer, action) if answer else None
         await state.broadcast(session_id, {
             "event": "answer_done",
@@ -158,8 +164,19 @@ async def answer_question(
     except Exception as exc:  # noqa: BLE001 - surfaced to both devices
         logger.exception("Answer generation failed")
         if state.is_current(session_id, generation):
+            # Keep the captured interviewer turn available so a transient model,
+            # network, or persistence error can be retried without new speech.
+            if history:
+                state.restore_pending_transcript(session_id, history)
+            state.clear_answer(session_id)
             await state.broadcast(session_id, {"event": "error", "message": _ai_error_message(exc)})
-            await state.broadcast(session_id, {"event": "answer_done", "qa_id": None, "status": "error", "finish_reason": None})
+            await state.broadcast(session_id, {
+                "event": "answer_done",
+                "qa_id": None,
+                "answer": "",
+                "status": "error",
+                "finish_reason": None,
+            })
     finally:
         if state.is_current(session_id, generation):
             await state.broadcast(session_id, {"event": "status", "state": "listening"})

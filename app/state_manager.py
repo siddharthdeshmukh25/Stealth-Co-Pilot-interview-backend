@@ -284,6 +284,9 @@ class LocalStateManager:
     def answer_snapshot(self, session_id: str) -> str:
         return self._answer_buffer.get(session_id, "")
 
+    def clear_answer(self, session_id: str) -> None:
+        self._answer_buffer[session_id] = ""
+
     def remember_question(self, session_id: str, question: str, batch: str = "") -> None:
         self._last_question[session_id] = question
         self._last_batch[session_id] = batch

@@ -92,12 +92,15 @@ class LocalStateManager:
         self.active_sockets: dict[str, set[WebSocket]] = defaultdict(set)
         self.session_context_cache: dict[str, dict[str, Any]] = {}
         self.session_transcript_cache: dict[str, list[str]] = defaultdict(list)
+        self._pending_transcript: dict[str, list[str]] = defaultdict(list)
+        self._batch_requested: set[str] = set()
         self._lock = asyncio.Lock()
         self._send_locks: dict[int, asyncio.Lock] = {}
         self._answer_generation: dict[str, int] = {}
         self._answer_stop: dict[str, threading.Event] = {}
         self._answer_buffer: dict[str, str] = {}
         self._last_question: dict[str, str] = {}
+        self._last_batch: dict[str, str] = {}
 
     # -- pairing ---------------------------------------------------------
     async def create_pairing_code(self, session_id: str, ttl_seconds: int = 600) -> str:
@@ -168,8 +171,16 @@ class LocalStateManager:
         transcript = self.session_transcript_cache[session_id]
         if transcript and _similar(transcript[-1], text):
             return False
+        normalized = text.lower()
+        if "welcome to" in normalized and "interview" in normalized:
+            # A fresh interview greeting starts a new captured part even if the
+            # room still contains captions from an earlier practice run.
+            self._pending_transcript[session_id].clear()
         transcript.append(text)
         del transcript[:-TRANSCRIPT_WINDOW]
+        pending = self._pending_transcript[session_id]
+        pending.append(text)
+        del pending[:-TRANSCRIPT_WINDOW]
         await asyncio.to_thread(_save_segment, session_id, text, len(transcript))
         return True
 
@@ -182,10 +193,35 @@ class LocalStateManager:
             self.session_transcript_cache[session_id] = loaded
         return loaded[-limit:]
 
+    def take_pending_transcript(
+        self,
+        session_id: str,
+        fallback: list[str],
+        repeat_last: bool = False,
+    ) -> list[str]:
+        """Take all captions since the previous Ask AI click as one turn batch."""
+        pending = self._pending_transcript.pop(session_id, [])
+        if pending:
+            self._batch_requested.add(session_id)
+            return pending
+        if session_id not in self._batch_requested:
+            self._batch_requested.add(session_id)
+            return list(fallback)
+        if repeat_last and self._last_batch.get(session_id):
+            return self._last_batch[session_id].splitlines()
+        return []
+
+    def restore_pending_transcript(self, session_id: str, segments: list[str]) -> None:
+        pending = self._pending_transcript[session_id]
+        self._pending_transcript[session_id] = (segments + pending)[-TRANSCRIPT_WINDOW:]
+
     async def clear_room(self, session_id: str) -> None:
         self.session_transcript_cache.pop(session_id, None)
+        self._pending_transcript.pop(session_id, None)
+        self._batch_requested.discard(session_id)
         self._answer_buffer.pop(session_id, None)
         self._last_question.pop(session_id, None)
+        self._last_batch.pop(session_id, None)
         await asyncio.to_thread(_delete_segments, session_id)
 
     def latest_transcript(self, session_id: str) -> str:
@@ -223,8 +259,9 @@ class LocalStateManager:
     def answer_snapshot(self, session_id: str) -> str:
         return self._answer_buffer.get(session_id, "")
 
-    def remember_question(self, session_id: str, question: str) -> None:
+    def remember_question(self, session_id: str, question: str, batch: str = "") -> None:
         self._last_question[session_id] = question
+        self._last_batch[session_id] = batch
 
     def last_question(self, session_id: str) -> str:
         return self._last_question.get(session_id, "")
@@ -234,6 +271,7 @@ class LocalStateManager:
             "event": "snapshot",
             "captions": await self.recent_segments(session_id, limit=12),
             "question": self._last_question.get(session_id, ""),
+            "batch": self._last_batch.get(session_id, ""),
             "answer": self.answer_snapshot(session_id),
         }
 

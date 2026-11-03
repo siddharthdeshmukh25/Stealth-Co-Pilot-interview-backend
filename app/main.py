@@ -73,7 +73,7 @@ def _save_answer(session_id: str, question: str, answer: str, action: str) -> in
         return entry.id
 
 
-async def answer_question(session_id: str, question: str, action: str = "standard", history: list[str] | None = None, topic: str = "") -> None:
+async def answer_question(session_id: str, question: str, action: str = "standard", history: list[str] | None = None, topic: str = "", batch: str = "") -> None:
     context = await state.context_for(session_id)
     if not context:
         await state.broadcast(session_id, {
@@ -87,7 +87,7 @@ async def answer_question(session_id: str, question: str, action: str = "standar
         return
 
     generation, stop = state.begin_answer(session_id)
-    await state.broadcast(session_id, {"event": "answer_started", "text": question})
+    await state.broadcast(session_id, {"event": "answer_started", "text": question, "batch": batch})
     await state.broadcast(session_id, {"event": "status", "state": "thinking"})
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -152,28 +152,35 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
     if action not in {"standard", "explain_deeper", "code_example"}:
         await websocket.send_json({"event": "error", "message": "Unknown AI action."})
         return
-    segments = await state.recent_segments(session_id, limit=10)
+    segments = await state.recent_segments(session_id, limit=40)
     if not segments:
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})
         return
-    previous_question = state.last_question(session_id)
-    detected = detect_question(
+    batch_segments = state.take_pending_transcript(
+        session_id,
         segments,
-        exclude=[previous_question] if event == "ask_ai" and previous_question else None,
+        repeat_last=event == "quick_action",
     )
+    if not batch_segments:
+        await websocket.send_json({"event": "error", "message": "Waiting for new interviewer speech before asking AI."})
+        return
+    detected = detect_question(batch_segments, lookback=max(10, len(batch_segments)))
     question = detected["question"]
     if not question:
+        state.restore_pending_transcript(session_id, batch_segments)
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})
         return
     topic = str(message.get("topic") or "").strip()[:200]
-    history = [segment for segment in segments if segment != question]
-    state.remember_question(session_id, question)
+    batch = "\n".join(batch_segments)
+    history = batch_segments
+    state.remember_question(session_id, question, batch)
     await state.broadcast(session_id, {
         "event": "question_detected",
         "text": question,
+        "batch": batch,
         "is_question": detected["is_question"],
     })
-    asyncio.create_task(answer_question(session_id, question, action, history, topic))
+    asyncio.create_task(answer_question(session_id, question, action, history, topic, batch))
 
 
 

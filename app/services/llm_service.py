@@ -46,7 +46,7 @@ def _resume_block(context: dict) -> str:
 
 def build_prompt(question: str, context: dict, action: str, history: list[str] | None = None, topic: str = "") -> str:
     job_description = str(context.get("job_description") or "").strip()[:2500]
-    transcript = "\n".join(history[-6:]) if history else ""
+    transcript = "\n".join(history[-40:])[:9000] if history else ""
     sections = [
         INSTRUCTIONS,
         MODE_INSTRUCTIONS.get(action, ""),
@@ -55,7 +55,10 @@ def build_prompt(question: str, context: dict, action: str, history: list[str] |
         _resume_block(context),
     ]
     if transcript:
-        sections.append(f"Earlier interviewer transcript, context only (oldest first):\n{transcript}")
+        sections.append(
+            "Complete interviewer transcript part captured since the last Ask AI click "
+            f"(oldest first; use all of it as context):\n{transcript}"
+        )
     if topic.strip():
         sections.append(f"The candidate asked for a code example of:\n{topic.strip()[:200]}")
     sections.append(f"Interviewer question to answer now:\n{question}")

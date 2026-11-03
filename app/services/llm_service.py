@@ -30,9 +30,11 @@ Style:
 - For a technical question, answer the question first, then one line connecting it to the candidate's real work."""
 
 MODE_INSTRUCTIONS = {
-    "explain_deeper": "The candidate tapped Explain deeper: add one concrete detail or trade-off, but stay under 110 words.",
-    "code_example": "The candidate tapped Code example. If the candidate supplied a topic below, return a short, correct code snippet in a fenced block with its language name, followed by one simple explanation sentence; keep it under 25 lines. If no topic was supplied and the interviewer question does not clearly request code, do not invent a code task or show a snippet. Ask one short, friendly clarification question such as which language or concept they want, so the candidate can enter it. If the interviewer question itself clearly asks for a code example, answer that request directly.",
+    "explain_deeper": "The candidate tapped Explain deeper: give a complete, natural answer with a concrete detail or trade-off. Use 2-4 short sentences, finish the thought clearly, and stay under 110 words. Do not return a fragment or cut off mid-sentence.",
+    "code_example": "The candidate tapped Code example. If the candidate supplied a topic below, return a correct, complete code solution in a fenced block with its language name, then explain the approach in simple spoken English and include time and space complexity when relevant. Keep code under 25 lines. If no topic was supplied and the interviewer question does not clearly request code, do not invent a task; ask one short, friendly clarification question. If the interviewer question itself asks for code, provide both the code and its explanation.",
 }
+
+CODING_TASK_INSTRUCTIONS = """The interviewer explicitly asked for a program, code, or implementation. This is a coding assessment, so code is required, not optional. First provide a correct, complete solution in a fenced Markdown code block with the requested language. Then briefly explain the approach and time and space complexity if asked. Use only the standard library unless the interviewer permits external packages. Keep the explanation in simple spoken English, but never replace the requested code with explanation alone."""
 
 
 def _resume_block(context: dict, question: str) -> str:
@@ -114,6 +116,11 @@ def build_prompt(
     transcript = "\n".join(history[-40:])[:9000] if history else ""
     sections = [
         INSTRUCTIONS,
+        CODING_TASK_INSTRUCTIONS if re.search(
+            r"\b(write|implement|create|develop|build|solve)\b.{0,140}\b(program|function|method|script|solution|algorithm|snippet|code)\b",
+            question,
+            re.IGNORECASE | re.DOTALL,
+        ) else "",
         MODE_INSTRUCTIONS.get(action, ""),
         f"Candidate role: {context.get('job_title') or 'the role being interviewed for'}",
         f"Job description:\n{job_description}",

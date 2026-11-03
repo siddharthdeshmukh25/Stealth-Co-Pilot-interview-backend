@@ -16,7 +16,7 @@ from .database import engine, init_db
 from .models import QALog
 from .network import lan_urls
 from .services.llm_service import stream_answer
-from .services.question_detector import detect_question
+from .services.question_detector import detect_question, select_answer_question
 from .services.stt_service import transcribe_audio
 from .state_manager import state
 
@@ -214,7 +214,7 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
     # Captions gathered since the last click are useful context, but only answer
     # the newest interviewer question. Older questions belong in answer history.
     questions = detected.get("questions") or []
-    question = questions[-1] if questions else detected["question"]
+    question = select_answer_question(questions) if questions else detected["question"]
     if not question:
         state.restore_pending_transcript(session_id, batch_segments)
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})

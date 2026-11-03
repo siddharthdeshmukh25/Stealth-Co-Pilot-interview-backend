@@ -5,7 +5,19 @@ QUESTION_START = re.compile(
     r"^\s*(what|what's|whats|why|how|when|where|which|who|whose|whom|"
     r"tell me|explain|describe|walk me through|talk me through|talk about|"
     r"can you|could you|would you|will you|do you|did you|does|have you|has|"
-    r"are you|is there|give me|share|show me|suppose|imagine|difference between)\b",
+    r"are you|is there|give me|share|show me|suppose|imagine|difference between|"
+    r"write|implement|create|develop|build|solve)\b",
+    re.IGNORECASE,
+)
+CODING_REQUEST = re.compile(
+    r"\b(write|implement|create|develop|build|solve)\b.{0,140}\b("
+    r"program|function|method|script|solution|algorithm|snippet|code)\b",
+    re.IGNORECASE,
+)
+CODING_FOLLOW_UP = re.compile(
+    r"\b(explain|describe|walk me through|talk me through)\b.{0,100}\b("
+    r"approach|solution|code|program|logic|complexity|time|space)\b|"
+    r"\b(time|space) complexity\b|\bcomplexity\b.{0,40}\b(time|space)\b",
     re.IGNORECASE,
 )
 
@@ -70,3 +82,17 @@ def detect_question(segments: list[str], lookback: int = 10, exclude: list[str] 
         "is_question": bool(last_index is not None),
         "index": last_index,
     }
+
+
+def select_answer_question(questions: list[str]) -> str:
+    """Keep a coding task with its immediate explanation/complexity follow-ups."""
+    if not questions:
+        return ""
+    for index, question in enumerate(questions):
+        if not CODING_REQUEST.search(question):
+            continue
+        end = index + 1
+        while end < len(questions) and CODING_FOLLOW_UP.search(questions[end]):
+            end += 1
+        return "\n".join(questions[index:end])
+    return questions[-1]

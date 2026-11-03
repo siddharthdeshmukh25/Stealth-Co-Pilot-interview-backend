@@ -80,7 +80,6 @@ async def answer_question(
     history: list[str] | None = None,
     topic: str = "",
     batch: str = "",
-    questions: list[str] | None = None,
 ) -> None:
     context = await state.context_for(session_id)
     if not context:
@@ -100,28 +99,15 @@ async def answer_question(
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
-    question_list = [item.strip() for item in (questions or [question]) if item and item.strip()]
-    if not question_list:
-        question_list = [question]
-
     def pump() -> None:
-        """Answer each question in its own model call, preserving a single click/batch."""
+        """Generate one answer for the current question; the batch is context only."""
         try:
-            finish_reason = None
-            for index, one_question in enumerate(question_list, 1):
+            tokens, status = stream_answer(question, context, action, history, topic)
+            for token in tokens:
                 if stop.is_set():
                     return
-                if len(question_list) > 1:
-                    heading = f"### Question {index}\n\n"
-                    loop.call_soon_threadsafe(queue.put_nowait, ("token", heading))
-                tokens, status = stream_answer(one_question, context, action, history, topic)
-                for token in tokens:
-                    if stop.is_set():
-                        return
-                    loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
-                if status.get("finish_reason") == "length":
-                    finish_reason = "length"
-            loop.call_soon_threadsafe(queue.put_nowait, ("done", {"finish_reason": finish_reason}))
+                loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", status))
         except Exception as exc:  # noqa: BLE001 - reported to the socket below
             if not stop.is_set():
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
@@ -134,7 +120,7 @@ async def answer_question(
         await state.broadcast(session_id, {"event": "status", "state": "streaming"})
         while True:
             try:
-                kind, payload = await asyncio.wait_for(queue.get(), timeout=95 * len(question_list))
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=95)
             except asyncio.TimeoutError as exc:
                 raise RuntimeError("The AI answer timed out. Check the internet connection and tap Ask AI again.") from exc
             if not state.is_current(session_id, generation):
@@ -186,7 +172,10 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
         await websocket.send_json({"event": "error", "message": "Waiting for new interviewer speech before asking AI."})
         return
     detected = detect_question(batch_segments, lookback=max(10, len(batch_segments)))
-    question = detected["question"]
+    # Captions gathered since the last click are useful context, but only answer
+    # the newest interviewer question. Older questions belong in answer history.
+    questions = detected.get("questions") or []
+    question = questions[-1] if questions else detected["question"]
     if not question:
         state.restore_pending_transcript(session_id, batch_segments)
         await websocket.send_json({"event": "error", "message": "Waiting for interviewer speech before asking AI."})
@@ -209,7 +198,6 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
             history,
             topic,
             batch,
-            detected.get("questions") or [question],
         )
     )
 

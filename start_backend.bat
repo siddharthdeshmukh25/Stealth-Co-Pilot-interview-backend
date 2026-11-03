@@ -57,7 +57,8 @@ if errorlevel 1 (
     )
 )
 
-if not exist ".env" echo NOTE: backend\.env was not found. The API can start, but Groq AI features need GROQ_API_KEY in that file.
+if not exist ".env" echo NOTE: backend\.env was not found. Add GROQ_API_KEY and OPENAI_API_KEY to enable AI features.
+echo AI keys: GROQ_API_KEY is used for resume parsing and speech transcription; OPENAI_API_KEY is used for interview answers.
 echo.
 echo Starting the backend at http://127.0.0.1:8000 ^(bound to 0.0.0.0 so the phone can connect^)
 echo API docs: http://127.0.0.1:8000/docs

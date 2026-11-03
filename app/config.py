@@ -35,13 +35,14 @@ def _default_database_url() -> str:
 
 class Settings(BaseSettings):
     groq_api_key: str | None = None
+    openai_api_key: str | None = None
     host: str = "0.0.0.0"
     port: int = 8000
     database_url: str = _default_database_url()
     cors_origins: str = "http://localhost:3000"
     cors_origin_regex: str = LAN_ORIGIN_REGEX
     pairing_ttl_seconds: int = 600
-    answer_model: str = "openai/gpt-oss-120b"
+    answer_model: str = "gpt-6-luna"
     resume_model: str = "openai/gpt-oss-120b"
     answer_temperature: float = 0.6
 
@@ -82,7 +83,7 @@ class Settings(BaseSettings):
 
     @property
     def is_reasoning_model(self) -> bool:
-        return "gpt-oss" in self.answer_model.lower()
+        return self.answer_model.lower().startswith("gpt-6")
 
     @property
     def database_path(self) -> Path | None:
@@ -97,26 +98,27 @@ settings = Settings()
 _KEY_CACHE: dict[str, tuple[float, str]] = {}
 
 
-def _key_from_file(path: Path) -> str:
-    """Read GROQ_API_KEY, re-reading only when the file actually changes."""
+def _key_from_file(path: Path, variable: str) -> str:
+    """Read one API key, re-reading only when the file actually changes."""
     try:
         modified = path.stat().st_mtime
     except OSError:
         return ""
-    cached = _KEY_CACHE.get(str(path))
+    cache_key = f"{path}:{variable}"
+    cached = _KEY_CACHE.get(cache_key)
     if cached and cached[0] == modified:
         return cached[1]
     try:
-        value = str(dotenv_values(path).get("GROQ_API_KEY") or "").strip()
+        value = str(dotenv_values(path).get(variable) or "").strip()
     except (OSError, ValueError):
         value = ""
-    _KEY_CACHE[str(path)] = (modified, value)
+    _KEY_CACHE[cache_key] = (modified, value)
     return value
 
 
-def get_groq_api_key() -> str | None:
-    """Resolve the key at call time for source, portable, and installed builds."""
-    environment_key = os.environ.get("GROQ_API_KEY", "").strip()
+def _get_api_key(variable: str) -> str | None:
+    """Resolve an API key at call time for source, portable, and installed builds."""
+    environment_key = os.environ.get(variable, "").strip()
     if environment_key:
         return environment_key
 
@@ -132,7 +134,17 @@ def get_groq_api_key() -> str | None:
     candidates.append(APP_DATA_ROOT / ".env")
 
     for path in candidates:
-        file_key = _key_from_file(path)
+        file_key = _key_from_file(path, variable)
         if file_key:
             return file_key
     return None
+
+
+def get_groq_api_key() -> str | None:
+    """Groq still powers resume parsing and speech transcription."""
+    return _get_api_key("GROQ_API_KEY")
+
+
+def get_openai_api_key() -> str | None:
+    """OpenAI powers live interview answer generation."""
+    return _get_api_key("OPENAI_API_KEY")

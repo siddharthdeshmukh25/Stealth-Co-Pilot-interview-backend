@@ -10,7 +10,7 @@ from sqlmodel import Session
 
 from .api.routes_resume import router as resume_router
 from .api.routes_session import router as session_router
-from .config import get_groq_api_key, settings
+from .config import get_groq_api_key, get_openai_api_key, settings
 from .database import engine, init_db
 from .models import QALog
 from .network import lan_urls
@@ -44,7 +44,9 @@ def health():
     database_path = settings.database_path
     return {
         "status": "ok",
-        "ai_configured": bool(get_groq_api_key()),
+        "ai_configured": bool(get_groq_api_key() and get_openai_api_key()),
+        "answer_ai_configured": bool(get_openai_api_key()),
+        "resume_stt_configured": bool(get_groq_api_key()),
         "bind_host": settings.host,
         "port": settings.port,
         "lan_urls": lan_urls(settings.port),
@@ -56,12 +58,17 @@ def health():
 
 
 def _ai_error_message(exc: Exception) -> str:
+    if not get_openai_api_key():
+        return (
+            "OPENAI_API_KEY is missing. Add your OpenAI API key to backend/.env or "
+            "%LOCALAPPDATA%\\StealthInterviewCoPilot\\.env, then restart the backend."
+        )
     if not get_groq_api_key():
         return (
-            "Groq API key is missing. Configure GROQ_API_KEY in backend/.env or "
-            "%LOCALAPPDATA%\\StealthInterviewCoPilot\\.env, then restart the desktop app."
+            "GROQ_API_KEY is missing. Groq is still used for resume parsing and speech transcription. "
+            "Add it to backend/.env, then restart the backend."
         )
-    return str(exc)[:400] or "Groq could not process the request. Check the local desktop log for details."
+    return str(exc)[:400] or "OpenAI could not process the request. Check the local desktop log for details."
 
 
 def _save_answer(session_id: str, question: str, answer: str, action: str) -> int | None:

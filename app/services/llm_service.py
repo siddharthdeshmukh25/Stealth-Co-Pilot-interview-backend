@@ -3,20 +3,22 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
-from groq import Groq
+from openai import OpenAI
 
-from ..config import get_groq_api_key, settings
+from ..config import get_openai_api_key, settings
 from .pdf_parser import _resume_identity
 
 MAX_ANSWER_TOKENS = {"standard": 900, "explain_deeper": 1400, "code_example": 1200}
 
-INSTRUCTIONS = """You are a live interview answer coach. The candidate is in a real interview right now and reads your answer on a phone.
+INSTRUCTIONS = """You are a calm, confident, professional interview coach. The candidate will say your answer aloud in a real interview.
 
 Answer ONLY the exact interviewer question at the very end of this message. Other questions in the transcript are context only; do not answer or mix them into this response.
 
 Style:
-- Use simple, everyday words that are easy to say aloud. Speak in first person, naturally and confidently.
-- Give a useful answer in about 3-5 short sentences (roughly 50-90 words). Stay focused on this question alone.
+- Sound like a prepared candidate: warm, respectful, direct, and natural. Use first person when describing the candidate's experience; avoid filler and overconfident claims.
+- Use simple everyday English and short sentences that are easy to say aloud. Avoid jargon; briefly explain a technical term if it is needed.
+- Match the speaking time to the question: 2-3 sentences for a simple fact, 3-5 for a technical explanation, and up to 6 for an experience or introduction. Usually stay between 35 and 90 words.
+- Stay focused on this question alone and stop when the point is clear.
 - Answer the point directly first, then add one relevant example or detail from the candidate's real experience. Avoid vague one-line answers and unnecessary background.
 - Use plain sentences: no headings, markdown, emoji, or stage directions.
 - Never summarise the whole resume and never list all skills unless that is exactly what was asked.
@@ -123,37 +125,36 @@ def build_prompt(question: str, context: dict, action: str, history: list[str] |
 
 def stream_answer(question: str, context: dict, action: str = "standard", history: list[str] | None = None, topic: str = ""):
     """Return (token_iterator, status). status['finish_reason'] is filled while consuming the iterator."""
-    api_key = get_groq_api_key()
+    api_key = get_openai_api_key()
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY is required for answer generation.")
-    client = Groq(api_key=api_key, timeout=60.0, max_retries=1)
+        raise RuntimeError("OPENAI_API_KEY is required for interview answer generation.")
+    client = OpenAI(api_key=api_key, timeout=60.0, max_retries=1)
     status: dict[str, Any] = {"finish_reason": None, "model": settings.answer_model}
 
     request: dict[str, Any] = {
         "model": settings.answer_model,
-        # Groq recommends a single user message for GPT-OSS reasoning models.
-        "messages": [{"role": "user", "content": build_prompt(question, context, action, history, topic)}],
-        "temperature": settings.answer_temperature,
-        "top_p": 0.95,
-        "max_completion_tokens": MAX_ANSWER_TOKENS.get(action, MAX_ANSWER_TOKENS["standard"]),
+        "input": build_prompt(question, context, action, history, topic),
+        "max_output_tokens": MAX_ANSWER_TOKENS.get(action, MAX_ANSWER_TOKENS["standard"]),
         "stream": True,
     }
     if settings.is_reasoning_model:
-        # Low reasoning keeps answers fast; the token budget above still leaves room for them.
-        request["reasoning_effort"] = "low"
-        request["include_reasoning"] = False
-
-    completion = client.chat.completions.create(**request)
+        # Keep live interview answers quick while allowing enough reasoning for accuracy.
+        request["reasoning"] = {"effort": "low"}
+    stream = client.responses.create(**request)
 
     def tokens() -> Iterator[str]:
-        for chunk in completion:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                status["finish_reason"] = choice.finish_reason
-            content = choice.delta.content if choice.delta else None
-            if content:
-                yield content
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                yield event.delta
+            elif event.type == "response.completed":
+                incomplete = getattr(event.response, "incomplete_details", None)
+                reason = getattr(incomplete, "reason", None) if incomplete else None
+                status["finish_reason"] = "length" if reason == "max_output_tokens" else "stop"
+            elif event.type == "response.incomplete":
+                incomplete = getattr(event, "response", None)
+                details = getattr(incomplete, "incomplete_details", None) if incomplete else None
+                status["finish_reason"] = "length" if getattr(details, "reason", None) == "max_output_tokens" else "incomplete"
+            elif event.type == "error":
+                raise RuntimeError(getattr(event, "message", "OpenAI returned a streaming error."))
 
     return tokens(), status

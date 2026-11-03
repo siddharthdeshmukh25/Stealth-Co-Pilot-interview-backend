@@ -253,16 +253,16 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
 
 
 
-_transcription_queues: dict[str, asyncio.Queue] = {}
-
-
 def _transcription_queue(session_id: str) -> asyncio.Queue:
     """One ordered worker per room: a slow Whisper call must never block new audio."""
-    queue = _transcription_queues.get(session_id)
+    queue = state.transcription_queues.get(session_id)
     if queue is None:
         queue = asyncio.Queue(maxsize=6)
-        _transcription_queues[session_id] = queue
-        asyncio.create_task(_transcription_worker(session_id, queue))
+        state.transcription_queues[session_id] = queue
+        state.transcription_workers[session_id] = asyncio.create_task(
+            _transcription_worker(session_id, queue),
+            name=f"transcription-{session_id}",
+        )
     return queue
 
 

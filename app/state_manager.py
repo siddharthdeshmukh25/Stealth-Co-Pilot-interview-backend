@@ -94,6 +94,8 @@ class LocalStateManager:
         self.session_context_cache: dict[str, dict[str, Any]] = {}
         self.session_transcript_cache: dict[str, list[str]] = defaultdict(list)
         self._pending_transcript: dict[str, list[str]] = defaultdict(list)
+        self.transcription_queues: dict[str, asyncio.Queue] = {}
+        self.transcription_workers: dict[str, asyncio.Task] = {}
         self._batch_requested: set[str] = set()
         self._lock = asyncio.Lock()
         self._send_locks: dict[int, asyncio.Lock] = {}
@@ -244,6 +246,11 @@ class LocalStateManager:
         if stop:
             stop.set()
         self._answer_generation.pop(session_id, None)
+        worker = self.transcription_workers.pop(session_id, None)
+        self.transcription_queues.pop(session_id, None)
+        if worker and not worker.done():
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
         await self.broadcast(session_id, {"event": "room_closed"})
         self._answer_buffer.pop(session_id, None)
         self._last_question.pop(session_id, None)

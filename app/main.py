@@ -131,16 +131,25 @@ async def answer_question(
 
     parts: list[str] = []
     finish_reason = None
+    idle_seconds = 0
     try:
         await state.broadcast(session_id, {"event": "status", "state": "streaming"})
         while True:
+            if not state.is_current(session_id, generation):
+                return
             try:
-                kind, payload = await asyncio.wait_for(queue.get(), timeout=95)
-            except asyncio.TimeoutError as exc:
-                raise RuntimeError("The AI answer timed out. Check the internet connection and tap Ask AI again.") from exc
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=1)
+            except asyncio.TimeoutError:
+                if not state.is_current(session_id, generation):
+                    return
+                idle_seconds += 1
+                if idle_seconds >= 95:
+                    raise RuntimeError("The AI answer timed out. Check the internet connection and tap Ask AI again.")
+                continue
             if not state.is_current(session_id, generation):
                 return
             if kind == "token":
+                idle_seconds = 0
                 parts.append(payload)
                 state.append_answer(session_id, payload)
                 await state.broadcast(session_id, {"event": "answer_token", "token": payload})
@@ -154,6 +163,7 @@ async def answer_question(
         if not answer.strip():
             raise RuntimeError("The AI returned an empty answer. Tap Ask AI again to retry this interview question.")
         qa_id = await asyncio.to_thread(_save_answer, session_id, question, answer, action) if answer else None
+        state.clear_answer_failures(session_id)
         await state.broadcast(session_id, {
             "event": "answer_done",
             "qa_id": qa_id,
@@ -168,6 +178,7 @@ async def answer_question(
             # network, or persistence error can be retried without new speech.
             if history:
                 state.restore_pending_transcript(session_id, history)
+                state.record_answer_failure(session_id, batch or "\n".join(history))
             state.clear_answer(session_id)
             await state.broadcast(session_id, {"event": "error", "message": _ai_error_message(exc)})
             await state.broadcast(session_id, {
@@ -212,6 +223,13 @@ async def _handle_ai_request(websocket: WebSocket, session_id: str, event: str, 
     model = str(message.get("model") or "").strip()[:160]
     additional_context = str(message.get("additional_context") or "").strip()[:3000]
     batch = "\n".join(batch_segments)
+    if state.answer_retry_count(session_id, batch) >= 3:
+        state.restore_pending_transcript(session_id, batch_segments)
+        await websocket.send_json({
+            "event": "error",
+            "message": "Ask AI failed 3 times for this interview turn. Check your connection or AI model settings, then try again after the interviewer speaks.",
+        })
+        return
     history = batch_segments
     state.remember_question(session_id, question, batch)
     await state.broadcast(session_id, {
@@ -290,6 +308,10 @@ async def websocket_room(websocket: WebSocket, session_id: str):
             elif event == "clear":
                 await state.clear_room(session_id)
                 await state.broadcast(session_id, {"event": "cleared"})
+                await state.broadcast(session_id, {"event": "status", "state": "listening"})
+            elif event == "clear_answer":
+                state.cancel_answer(session_id)
+                await state.broadcast(session_id, {"event": "answer_cleared"})
                 await state.broadcast(session_id, {"event": "status", "state": "listening"})
             elif event == "transcript":
                 # The desktop app transcribes on its own machine and sends text only.

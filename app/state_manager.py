@@ -102,6 +102,7 @@ class LocalStateManager:
         self._answer_buffer: dict[str, str] = {}
         self._last_question: dict[str, str] = {}
         self._last_batch: dict[str, str] = {}
+        self._answer_failures: dict[str, tuple[str, int]] = {}
 
     # -- pairing ---------------------------------------------------------
     async def create_pairing_code(self, session_id: str, ttl_seconds: int = 600) -> str:
@@ -216,6 +217,17 @@ class LocalStateManager:
         pending = self._pending_transcript[session_id]
         self._pending_transcript[session_id] = (segments + pending)[-TRANSCRIPT_WINDOW:]
 
+    def answer_retry_count(self, session_id: str, batch: str) -> int:
+        previous_batch, attempts = self._answer_failures.get(session_id, ("", 0))
+        return attempts if previous_batch == batch else 0
+
+    def record_answer_failure(self, session_id: str, batch: str) -> None:
+        attempts = self.answer_retry_count(session_id, batch) + 1
+        self._answer_failures[session_id] = (batch, attempts)
+
+    def clear_answer_failures(self, session_id: str) -> None:
+        self._answer_failures.pop(session_id, None)
+
     async def clear_room(self, session_id: str) -> None:
         self.session_transcript_cache.pop(session_id, None)
         self._pending_transcript.pop(session_id, None)
@@ -223,6 +235,7 @@ class LocalStateManager:
         self._answer_buffer.pop(session_id, None)
         self._last_question.pop(session_id, None)
         self._last_batch.pop(session_id, None)
+        self.clear_answer_failures(session_id)
         await asyncio.to_thread(_delete_segments, session_id)
 
     async def close_room(self, session_id: str) -> None:
@@ -235,6 +248,7 @@ class LocalStateManager:
         self._answer_buffer.pop(session_id, None)
         self._last_question.pop(session_id, None)
         self._last_batch.pop(session_id, None)
+        self.clear_answer_failures(session_id)
         self.session_context_cache.pop(session_id, None)
         self.session_transcript_cache.pop(session_id, None)
         self._pending_transcript.pop(session_id, None)
@@ -286,6 +300,13 @@ class LocalStateManager:
 
     def clear_answer(self, session_id: str) -> None:
         self._answer_buffer[session_id] = ""
+
+    def cancel_answer(self, session_id: str) -> None:
+        stop = self._answer_stop.get(session_id)
+        if stop:
+            stop.set()
+        self._answer_generation[session_id] = self._answer_generation.get(session_id, 0) + 1
+        self.clear_answer(session_id)
 
     def remember_question(self, session_id: str, question: str, batch: str = "") -> None:
         self._last_question[session_id] = question

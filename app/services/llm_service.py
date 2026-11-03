@@ -31,7 +31,7 @@ Style:
 
 MODE_INSTRUCTIONS = {
     "explain_deeper": "The candidate tapped Explain deeper: add one concrete detail or trade-off, but stay under 110 words.",
-    "code_example": "The candidate tapped Code example: always return a short, correct code snippet in a fenced block (markdown triple backticks) with the language name, then one sentence explaining it. Keep the snippet under 25 lines. If the candidate supplied a topic below, write the snippet for that topic.",
+    "code_example": "The candidate tapped Code example. If the candidate supplied a topic below, return a short, correct code snippet in a fenced block with its language name, followed by one simple explanation sentence; keep it under 25 lines. If no topic was supplied and the interviewer question does not clearly request code, do not invent a code task or show a snippet. Ask one short, friendly clarification question such as which language or concept they want, so the candidate can enter it. If the interviewer question itself clearly asks for a code example, answer that request directly.",
 }
 
 

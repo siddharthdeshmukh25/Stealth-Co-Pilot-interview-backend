@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     cors_origin_regex: str = LAN_ORIGIN_REGEX
     pairing_ttl_seconds: int = 600
-    answer_model: str = "llama-3.3-70b-versatile"
+    answer_model: str = "openai/gpt-oss-120b"
     resume_model: str = "openai/gpt-oss-120b"
     answer_temperature: float = 0.6
 

@@ -29,9 +29,30 @@ connect_args = {"check_same_thread": False, "timeout": 15} if settings.database_
 engine = create_engine(settings.database_url, connect_args=connect_args, echo=False)
 
 
+def _add_missing_columns() -> None:
+    """create_all never alters an existing table: add the history columns once."""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    additions = {
+        "ended_at": "ALTER TABLE interview_sessions ADD COLUMN ended_at DATETIME",
+        "duration_seconds": (
+            "ALTER TABLE interview_sessions ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0"
+        ),
+    }
+    with engine.connect() as connection:
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(interview_sessions)")}
+        if not columns:
+            return
+        for name, statement in additions.items():
+            if name not in columns:
+                connection.exec_driver_sql(statement)
+        connection.commit()
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
     SQLModel.metadata.create_all(engine)
+    _add_missing_columns()
 
 
 def get_session():

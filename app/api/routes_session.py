@@ -1,14 +1,23 @@
 import uuid
 import hmac
 
+from datetime import timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..config import settings
 from ..database import get_session
-from ..models import Candidate, InterviewSession, QALog, TranscriptSegment
-from ..schemas import PairRequest, PairResponse, SessionCloseRequest, SessionCreate, SessionResponse
+from ..models import Candidate, InterviewSession, QALog, TranscriptSegment, utc_now
+from ..schemas import (
+    PairRequest,
+    PairResponse,
+    SessionCloseRequest,
+    SessionCreate,
+    SessionEndRequest,
+    SessionResponse,
+)
 from ..state_manager import state
 
 router = APIRouter(prefix="/api/session", tags=["session"])
@@ -91,15 +100,67 @@ async def resolve_pairing(pairing_code: str, db: Session = Depends(get_session))
 
 
 @router.get("/{session_id}")
-def get_session(session_id: str, db: Session = Depends(get_session)):
+def read_session(session_id: str, db: Session = Depends(get_session)):
+    """Room state for both clients.
+
+    The phone calls this when it opens or reconnects so an interview the desktop
+    already ended shows the Interview Ended page instead of waiting for captions.
+    """
     record = db.get(InterviewSession, session_id)
     if not record:
         raise HTTPException(404, "Session not found.")
+    questions = len(db.exec(select(QALog.id).where(QALog.session_id == session_id)).all())
+    captions = len(
+        db.exec(select(TranscriptSegment.id).where(TranscriptSegment.session_id == session_id)).all()
+    )
     return {
         "session_id": record.session_id,
         "job_title": record.job_title,
         "status": record.status,
         "is_exe_paired": record.is_exe_paired,
+        "ended_at": record.ended_at.isoformat() if record.ended_at else None,
+        "duration_seconds": record.duration_seconds,
+        "questions": questions,
+        "captions": captions,
+    }
+
+
+@router.post("/{session_id}/end")
+async def end_session(
+    session_id: str,
+    payload: SessionEndRequest | None = None,
+    db: Session = Depends(get_session),
+):
+    """End a live room and keep its captions and answers for Interview History.
+
+    Called by the desktop app and by the phone; both devices get
+    ``interview_ended`` so the room closes everywhere at once. The phone does not
+    ask for the pairing code — the session id it is already on is the credential.
+    """
+    record = db.get(InterviewSession, session_id)
+    if not record:
+        raise HTTPException(404, "This interview room no longer exists.")
+    code = (payload.pairing_code if payload else None) or ""
+    if code and not hmac.compare_digest(record.pairing_code, code):
+        raise HTTPException(403, "The pairing code does not match this interview room.")
+    if record.status != "ended":
+        ended = utc_now()
+        created = record.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        record.status = "ended"
+        record.ended_at = ended
+        record.duration_seconds = max(0, int((ended - created).total_seconds()))
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    await state.broadcast(session_id, {"event": "interview_ended", "session_id": session_id})
+    await state.close_room(session_id)
+    return {
+        "session_id": record.session_id,
+        "status": record.status,
+        "duration_seconds": record.duration_seconds,
+        "ended_at": record.ended_at.isoformat() if record.ended_at else None,
     }
 
 

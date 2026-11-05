@@ -35,6 +35,27 @@ class PairRequest(BaseModel):
 class SessionCloseRequest(PairRequest):
     """Require the desktop's pairing code before deleting a room and its data."""
 
+
+class SessionEndRequest(BaseModel):
+    """End a room from either device.
+
+    The desktop app sends its pairing code as a second check; the phone only has
+    the session link, so the code is optional there and the unguessable session id
+    is the credential.
+    """
+
+    pairing_code: str | None = None
+
+    @field_validator("pairing_code")
+    @classmethod
+    def _optional_six_digits(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        digits = "".join(character for character in value if character.isdigit())
+        if len(digits) != 6:
+            raise ValueError("Pairing code must be six digits.")
+        return digits
+
 class PairResponse(BaseModel):
     session_id: str
     paired: bool

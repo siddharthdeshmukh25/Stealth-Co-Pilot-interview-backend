@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+from .api.routes_history import router as history_router
 from .api.routes_resume import router as resume_router
 from .api.routes_ai import router as ai_router
 from .api.routes_session import router as session_router
@@ -34,6 +35,7 @@ app.add_middleware(
 app.include_router(resume_router)
 app.include_router(ai_router)
 app.include_router(session_router)
+app.include_router(history_router)
 
 
 @app.on_event("startup")
@@ -273,8 +275,14 @@ async def _transcription_worker(session_id: str, queue: asyncio.Queue) -> None:
             await state.broadcast(session_id, {"event": "status", "state": "transcribing"})
             caption = await asyncio.to_thread(transcribe_audio, wav_bytes)
             if caption:
-                if await state.append_caption(session_id, caption):
-                    await state.broadcast(session_id, {"event": "caption", "text": caption})
+                created = await state.append_caption(session_id, caption)
+                if created:
+                    # Captions only happen while capture runs, so this also repairs
+                    # the state for an older desktop build that never sends it.
+                    state.set_caption_state(session_id, "on")
+                    await state.broadcast(
+                        session_id, {"event": "caption", "text": caption, "timestamp": created}
+                    )
             else:
                 await state.broadcast(session_id, {
                     "event": "transcription_empty",
@@ -319,8 +327,20 @@ async def websocket_room(websocket: WebSocket, session_id: str):
                 if not text:
                     await websocket.send_json({"event": "error", "message": "Transcript text is empty."})
                     continue
-                if await state.append_caption(session_id, text):
-                    await state.broadcast(session_id, {"event": "caption", "text": text})
+                created = await state.append_caption(session_id, text)
+                if created:
+                    state.set_caption_state(session_id, "on")
+                    await state.broadcast(
+                        session_id, {"event": "caption", "text": text, "timestamp": created}
+                    )
+            elif event == "caption_state":
+                # The desktop reports capture start/stop/pause so the phone can show
+                # "Live caption off" and tell the user to start captions again.
+                value = str(message.get("state") or "on").lower()
+                if value not in {"on", "off", "paused"}:
+                    value = "on"
+                state.set_caption_state(session_id, value)
+                await state.broadcast(session_id, {"event": "caption_state", "state": value})
             elif event == "audio_utterance":
                 encoded = message.get("audio_base64", "")
                 if not encoded:

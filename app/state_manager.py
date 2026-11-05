@@ -11,7 +11,7 @@ from fastapi import WebSocket
 from sqlmodel import Session, select
 
 from .database import engine
-from .models import Candidate, InterviewSession, TranscriptSegment
+from .models import Candidate, InterviewSession, TranscriptSegment, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,28 @@ def _load_context(session_id: str) -> dict[str, Any] | None:
         }
 
 
-def _save_segment(session_id: str, text: str, seq: int) -> None:
+def _save_segment(session_id: str, text: str, seq: int) -> str:
+    """Store a caption and return its timestamp: the phone shows a clock per line."""
+    created = utc_now()
     with Session(engine) as db:
-        db.add(TranscriptSegment(session_id=session_id, text=text, seq=seq))
+        db.add(TranscriptSegment(session_id=session_id, text=text, seq=seq, created_at=created))
         db.commit()
+    return created.isoformat()
+
+
+def _load_segment_rows(session_id: str, limit: int = TRANSCRIPT_WINDOW) -> list[dict[str, str | None]]:
+    """Newest captions with their timestamps, oldest first."""
+    with Session(engine) as db:
+        rows = db.exec(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.session_id == session_id)
+            .order_by(TranscriptSegment.id.desc())
+            .limit(limit)
+        ).all()
+    return [
+        {"text": row.text, "timestamp": row.created_at.isoformat() if row.created_at else None}
+        for row in reversed(rows)
+    ]
 
 
 def _load_segments(session_id: str, limit: int = TRANSCRIPT_WINDOW) -> list[str]:
@@ -105,6 +123,9 @@ class LocalStateManager:
         self._last_question: dict[str, str] = {}
         self._last_batch: dict[str, str] = {}
         self._answer_failures: dict[str, tuple[str, int]] = {}
+        # Whether the desktop is capturing speaker audio, so the phone can show
+        # "Live caption off" instead of sitting silently on a blank screen.
+        self._caption_state: dict[str, str] = {}
 
     # -- pairing ---------------------------------------------------------
     async def create_pairing_code(self, session_id: str, ttl_seconds: int = 600) -> str:
@@ -167,14 +188,17 @@ class LocalStateManager:
             logger.debug("Skipping a websocket send: %s", exc)
 
     # -- transcript ------------------------------------------------------
-    async def append_caption(self, session_id: str, text: str) -> bool:
-        """Keep a bounded transcript in memory and in SQLite; drop near-duplicate captions."""
+    async def append_caption(self, session_id: str, text: str) -> str | None:
+        """Keep a bounded transcript in memory and in SQLite; drop near-duplicate captions.
+
+        Returns the caption timestamp, or ``None`` when the caption was dropped.
+        """
         text = " ".join(text.split())
         if not text:
-            return False
+            return None
         transcript = self.session_transcript_cache[session_id]
         if transcript and _similar(transcript[-1], text):
-            return False
+            return None
         normalized = text.lower()
         if "welcome to" in normalized and "interview" in normalized:
             # A fresh interview greeting starts a new captured part even if the
@@ -185,8 +209,7 @@ class LocalStateManager:
         pending = self._pending_transcript[session_id]
         pending.append(text)
         del pending[:-TRANSCRIPT_WINDOW]
-        await asyncio.to_thread(_save_segment, session_id, text, len(transcript))
-        return True
+        return await asyncio.to_thread(_save_segment, session_id, text, len(transcript))
 
     async def recent_segments(self, session_id: str, limit: int = 8) -> list[str]:
         cached = self.session_transcript_cache.get(session_id)
@@ -260,6 +283,7 @@ class LocalStateManager:
         self.session_transcript_cache.pop(session_id, None)
         self._pending_transcript.pop(session_id, None)
         self._batch_requested.discard(session_id)
+        self._caption_state.pop(session_id, None)
         for code, (mapped_session, _) in list(self.pairing_map.items()):
             if mapped_session == session_id:
                 self.pairing_map.pop(code, None)
@@ -322,13 +346,22 @@ class LocalStateManager:
     def last_question(self, session_id: str) -> str:
         return self._last_question.get(session_id, "")
 
+    def set_caption_state(self, session_id: str, value: str) -> None:
+        self._caption_state[session_id] = value
+
+    def caption_state(self, session_id: str) -> str:
+        # A new room has no capture running yet: the phone says so instead of waiting.
+        return self._caption_state.get(session_id, "off")
+
     async def snapshot(self, session_id: str) -> dict[str, Any]:
         return {
             "event": "snapshot",
             "captions": await self.recent_segments(session_id, limit=12),
+            "transcript": await asyncio.to_thread(_load_segment_rows, session_id, 40),
             "question": self._last_question.get(session_id, ""),
             "batch": self._last_batch.get(session_id, ""),
             "answer": self.answer_snapshot(session_id),
+            "caption_state": self.caption_state(session_id),
         }
 
 

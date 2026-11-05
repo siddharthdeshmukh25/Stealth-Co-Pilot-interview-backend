@@ -20,6 +20,9 @@ LAN_ORIGIN_REGEX = (
     r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
     r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
     r")(?::\d+)?$"
+    # The hosted web app and every Vercel preview deployment: the project domain
+    # can change without a backend redeploy or a CORS failure on the phone.
+    r"|^https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app$"
 )
 
 

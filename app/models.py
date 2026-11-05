@@ -22,6 +22,10 @@ class InterviewSession(SQLModel, table=True):
     is_exe_paired: bool = Field(default=False, nullable=False)
     status: str = Field(default="active", nullable=False)
     created_at: datetime = Field(default_factory=utc_now, nullable=False)
+    # Filled in when the room is ended: ended rooms keep their captions and answers
+    # so the desktop app can show them under Interview History.
+    ended_at: datetime | None = Field(default=None, nullable=True)
+    duration_seconds: int = Field(default=0, nullable=False)
 
 class QALog(SQLModel, table=True):
     __tablename__ = "qa_logs"
